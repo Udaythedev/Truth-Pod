@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: truthpod
+      POSTGRES_PASSWORD: truthpod
+      POSTGRES_DB: truthpod
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgresql+psycopg2://truthpod:truthpod@db:5432/truthpod
+      REDIS_URL: redis://redis:6379/0
+      NEWSAPI_KEY: ""
+      GEMINI_API_URL: ""
+      GEMINI_API_KEY: ""
+      DEVICE_JWT_SECRET: change-me
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./media:/app/media
+
+volumes:
+  pgdata:

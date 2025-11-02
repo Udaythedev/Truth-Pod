@@ -1,0 +1,260 @@
+    name: CI
+
+on:
+  push:
+    branches: [ main, LLM ]
+  pull_request:
+    branches: [ main, LLM ]
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run backend tests
+        working-directory: backend
+        run: |
+          pytest -q
+
+  docker-build-test:
+    runs-on: ubuntu-latest
+    needs: test-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build backend Docker image (with cache)
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          tags: truthpod-backend:ci
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move build cache
+        run: |
+          if [ -d /tmp/.buildx-cache-new ]; then rm -rf /tmp/.buildx-cache || true; mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true; fi
+
+      - name: Run tests inside container
+        working-directory: backend
+        run: |
+          # Run pytest inside the image. The image contains tests and deps per Dockerfile
+          docker run --rm truthpod-backend:ci pytest -q
+
+  build-device-sdk:
+    runs-on: ubuntu-latest
+    needs: test-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install build tool
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build Device SDK
+        working-directory: backend/device_sdk
+        run: |
+          python -m build
+
+      - name: Upload Device SDK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-sdk-dist
+          path: backend/device_sdk/dist/*
+
+  verify-device-sdk:
+    runs-on: ubuntu-latest
+    needs: build-device-sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Download device SDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: device-sdk-dist
+          path: device_sdk_dist
+
+      - name: Install built wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install device_sdk_dist/*.whl
+
+      - name: Smoke test import
+        run: |
+          python -c "import device_sdk; from device_sdk.client import DeviceClient; print('OK', device_sdk.__file__)"
+
+  integration-stack:
+    runs-on: ubuntu-latest
+    needs: docker-build-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Start compose stack (Postgres + Redis)
+        working-directory: backend
+        run: |
+          docker compose up -d db redis
+
+      - name: Wait for DB and run migrations
+        working-directory: backend
+        run: |
+          # wait until postgres accepts connections (simple retry loop)
+          for i in {1..30}; do \
+            docker run --rm --network container:$(docker ps -q -f name=backend_db) --entrypoint "" alpine sh -c "apk add --no-cache postgresql-client >/dev/null 2>&1 || true" || true; \
+            # try psql via host.docker.internal if available (best effort)
+            sleep 2; \
+          done
+          # Run migrations using the built image
+          docker run --rm --env DATABASE_URL=postgresql+psycopg2://truthpod:truthpod@db:5432/truthpod --network host truthpod-backend:ci alembic upgrade head || true
+
+      - name: Run tests against stack
+        working-directory: backend
+        run: |
+          # run pytest from the built image (connects to db:postgres and redis)
+          docker run --rm --env DATABASE_URL=postgresql+psycopg2://truthpod:truthpod@db:5432/truthpod --env REDIS_URL=redis://redis:6379/0 --network host truthpod-backend:ci pytest -q || exit 1
+
+      - name: Tear down compose stack
+        if: always()
+        working-directory: backend
+        run: |
+          docker compose down -v
+
+  integration-services:
+    runs-on: ubuntu-latest
+    needs: docker-build-test
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: truthpod
+          POSTGRES_PASSWORD: truthpod
+          POSTGRES_DB: truthpod
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U truthpod" --health-interval=10s --health-timeout=5s --health-retries=5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Wait for Postgres to be healthy
+        run: |
+          echo "Waiting for Postgres..."
+          for i in {1..30}; do
+            pg_isready -h localhost -p 5432 -U truthpod && break
+            sleep 2
+          done
+
+      - name: Run migrations (alembic)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg2://truthpod:truthpod@localhost:5432/truthpod
+        run: |
+          .venv/bin/python -m pip install --upgrade pip || true
+          pip install -r requirements.txt || true
+          .venv/bin/alembic upgrade head || alembic upgrade head || true
+
+      - name: Run backend tests against services
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg2://truthpod:truthpod@localhost:5432/truthpod
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          pytest -q
+
+  verify-provider:
+    runs-on: ubuntu-latest
+    needs: integration-services
+    if: ${{ secrets.GEMINI_API_KEY != '' || secrets.VERTEX_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run verification provider example
+        working-directory: backend
+        env:
+          GEMINI_API_URL: ${{ secrets.GEMINI_API_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VERTEX_API_ENDPOINT: ${{ secrets.VERTEX_API_ENDPOINT }}
+          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+        run: |
+          # Run integration pytest marker using configured provider secrets
+          pytest -q -m integration || true

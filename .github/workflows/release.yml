@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/truthpod-backend:latest
+            ghcr.io/${{ github.repository_owner }}/truthpod-backend:${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Python artifacts (wheel + sdist)
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip wheel . -w dist || python -m pip install build && python -m build --wheel --sdist --outdir dist
+          ls -lah dist || true
+
+      - name: Build Device SDK artifacts (wheel + sdist)
+        working-directory: backend/device_sdk
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip wheel . -w dist || python -m pip install build && python -m build --wheel --sdist --outdir dist
+          ls -lah dist || true
+
+      - name: Publish Device SDK to GitHub Packages
+        if: ${{ secrets.GITHUB_TOKEN != '' }}
+        env:
+          GITHUB_OWNER: ${{ github.repository_owner }}
+        run: |
+          python -m pip install --upgrade pip setuptools wheel twine
+          echo "Publishing device SDK to GitHub Packages (owner=${GITHUB_OWNER})"
+          python -m twine upload --repository-url https://upload.pypi.pkg.github.com/${GITHUB_OWNER} -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} backend/device_sdk/dist/* || true
+
+      # (Artifacts will be attached to the release after it is created)
+
+      - name: Generate changelog
+        id: generate_changelog
+        run: |
+          # Try to find the previous tag; if none, use the last 50 commits
+          PREV_TAG=$(git describe --tags --abbrev=0 "${GITHUB_REF}^" 2>/dev/null || true)
+          if [ -n "$PREV_TAG" ]; then
+            echo "Generating changelog from $PREV_TAG to ${GITHUB_REF}"
+            git log ${PREV_TAG}..HEAD --pretty=format:'- %s (%h)' > /tmp/CHANGELOG
+          else
+            echo "No previous tag found; using latest 50 commits"
+            git log -n 50 --pretty=format:'- %s (%h)' > /tmp/CHANGELOG
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/CHANGELOG >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: |
+            Automated release for ${{ github.ref_name }}.
+
+            Changelog:
+            ${{ steps.generate_changelog.outputs.changelog }}
+          draft: false
+          prerelease: false
+
+      - name: Upload release artifacts
+        if: steps.create_release.outputs.upload_url != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPLOAD_URL: ${{ steps.create_release.outputs.upload_url }}
+        run: |
+          echo "Uploading files from backend/dist to release"
+          for f in backend/dist/* backend/device_sdk/dist/*; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            echo "Uploading $name..."
+            curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/octet-stream" --data-binary @"$f" "${UPLOAD_URL}?name=$name"
+          done
+
+      - name: Done
+        run: echo "Release ${{ github.ref_name }} created and image published to GHCR"

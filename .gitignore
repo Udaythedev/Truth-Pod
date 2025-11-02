@@ -179,3 +179,20 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Project-sensitive files
+# Do not commit the full project design / secret docs
+TruthPod-Complete-Project-Document-V2.md
+
+# Local sqlite DB used in backend during development
+backend/truthpod.db
+
+# Common secret/key patterns
+*.pem
+*.key
+*.p12
+*.crt
+
+# Environment override files
+.env.local
+.env.*

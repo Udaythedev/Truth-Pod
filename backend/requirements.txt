@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+python-jose[cryptography]
+python-dotenv
+httpx
+pytest
+pytest-asyncio
+sqlalchemy
+redis
+alembic
+psycopg2-binary
+requests
+click
