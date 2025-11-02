@@ -361,7 +361,8 @@ void captureAndRecognize() {
   esp_camera_fb_return(fb);
   
   // Send to backend for recognition
-  String payload = "{\"image_data\":\"" + base64Image + "\"}";
+  // Backend expects: {"image_base64": "..."}
+  String payload = "{\"image_base64\":\"" + base64Image + "\"}";
   String response = "";
   
   Serial.println("Sending to backend for recognition...");
@@ -371,13 +372,13 @@ void captureAndRecognize() {
     DeserializationError error = deserializeJson(doc, response);
     
     if (!error) {
-      bool matched = doc["matched"] | false;
+      // Backend returns: {"user_id": 123 or null, "user_name": "...", "confidence": 0.95}
+      // user_id is null when user_name is "UNKNOWN"
+      int userId = doc["user_id"] | 0;
+      String userName = doc["user_name"] | "Unknown";
+      float confidence = doc["confidence"] | 0.0;
       
-      if (matched) {
-        int userId = doc["user_id"] | 0;
-        String userName = doc["user_name"] | "Unknown";
-        float confidence = doc["confidence"] | 0.0;
-        
+      if (userId > 0 && userName != "UNKNOWN") {
         Serial.printf("Face recognized: User ID %d, Name: %s, Confidence: %.2f\n", 
                       userId, userName.c_str(), confidence);
         
@@ -450,7 +451,8 @@ void captureAndEnroll() {
   esp_camera_fb_return(fb);
   
   // Send to backend for enrollment
-  String payload = "{\"user_name\":\"" + userName + "\",\"image_data\":\"" + base64Image + "\"}";
+  // Backend expects: {"user_name": "...", "image_base64": "..."}
+  String payload = "{\"user_name\":\"" + userName + "\",\"image_base64\":\"" + base64Image + "\"}";
   String response = "";
   
   Serial.println("Sending to backend for enrollment...");
@@ -460,11 +462,15 @@ void captureAndEnroll() {
     DeserializationError error = deserializeJson(doc, response);
     
     if (!error) {
+      // Backend returns: {"user_id": 123, "user_name": "...", "face_image_url": "..."}
       int userId = doc["user_id"] | 0;
-      String message = doc["message"] | "";
+      String returnedName = doc["user_name"] | "";
+      String imageUrl = doc["face_image_url"] | "";
       
-      Serial.printf("Enrollment successful: User ID %d\n", userId);
-      Serial.println(message);
+      Serial.printf("Enrollment successful: User ID %d, Name: %s\n", userId, returnedName.c_str());
+      if (imageUrl.length() > 0) {
+        Serial.printf("Image URL: %s\n", imageUrl.c_str());
+      }
       
       // Send to main board
       sendToMainBoard("ENROLL_OK:" + String(userId));

@@ -559,7 +559,9 @@ void recordAndTranscribe() {
 void fetchTrendingNews() {
   String response = "";
   
-  if (makeAPICall("/api/iot/news/trending?region=in&category=general", "GET", "", response)) {
+  // Backend trending endpoint: /api/iot/trending?region=in&limit=5
+  // Note: Backend doesn't support category parameter, only region and limit
+  if (makeAPICall("/api/iot/trending?region=in&limit=5", "GET", "", response)) {
     parseNewsResponse(response);
   } else {
     Serial.println("Failed to fetch trending news");
@@ -568,7 +570,8 @@ void fetchTrendingNews() {
 
 // ===== Fetch Search News =====
 void fetchSearchNews(String query) {
-  String endpoint = "/api/iot/news/search?q=" + urlEncode(query);
+  // Backend search endpoint: /api/iot/search?query=<text>&limit=10
+  String endpoint = "/api/iot/search?query=" + urlEncode(query) + "&limit=10";
   String response = "";
   
   if (makeAPICall(endpoint, "GET", "", response)) {
@@ -588,7 +591,8 @@ void parseNewsResponse(String response) {
     return;
   }
   
-  JsonArray articles = doc["articles"];
+  // Backend returns {"data": [{"news_id": "...", "headline": "...", "source": "...", "confidence": 0.95, "url": "..."}]}
+  JsonArray articles = doc["data"];
   totalArticles = min((int)articles.size(), 10);
   
   Serial.print("Parsed ");
@@ -597,12 +601,12 @@ void parseNewsResponse(String response) {
   
   for (int i = 0; i < totalArticles; i++) {
     JsonObject article = articles[i];
-    newsArticles[i].id = article["id"].as<String>();
-    newsArticles[i].title = article["title"].as<String>();
+    newsArticles[i].id = article["news_id"].as<String>();  // Changed from "id" to "news_id"
+    newsArticles[i].title = article["headline"].as<String>();  // Changed from "title" to "headline"
     newsArticles[i].source = article["source"].as<String>();
-    newsArticles[i].description = article["description"] | "";
+    newsArticles[i].description = "";  // Backend doesn't return description in list
     newsArticles[i].confidence = article["confidence"] | 0.75;
-    newsArticles[i].publishedAt = article["publishedAt"] | "";
+    newsArticles[i].publishedAt = "";  // Backend doesn't return publishedAt in list
   }
 }
 
@@ -616,7 +620,15 @@ void playNewsAudio(String newsId) {
     DeserializationError error = deserializeJson(doc, response);
     
     if (!error) {
-      String base64Audio = doc["audio_data"].as<String>();
+      // Backend returns {"audio_base64": "...", "mime_type": "audio/mpeg"}
+      String base64Audio = doc["audio_base64"].as<String>();  // Changed from "audio_data" to "audio_base64"
+      String mimeType = doc["mime_type"] | "audio/mpeg";  // gTTS returns MP3 by default
+      
+      Serial.print("Received audio (");
+      Serial.print(mimeType);
+      Serial.print("): ");
+      Serial.print(base64Audio.length());
+      Serial.println(" chars");
       
       // Decode base64 audio
       int decodedLen = base64::decodeLength(base64Audio.c_str());
