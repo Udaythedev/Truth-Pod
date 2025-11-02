@@ -29,6 +29,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
+          # Ensure the Device SDK is available to tests (editable install mirrors local dev)
+          pip install -e backend/device_sdk
 
       - name: Run backend tests
         working-directory: backend
@@ -197,6 +199,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
+          # Install the local Device SDK so pytest can import it from src/device_sdk
+          pip install -e backend/device_sdk
 
       - name: Wait for Postgres to be healthy
         run: |

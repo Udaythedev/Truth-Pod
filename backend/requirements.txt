@@ -12,3 +12,6 @@ alembic
 psycopg2-binary
 requests
 click
+google-cloud-speech
+google-cloud-texttospeech
+boto3

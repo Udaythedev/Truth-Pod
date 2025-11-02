@@ -1,0 +1,55 @@
+# Render Blueprint for TruthPod
+# Docs: https://render.com/docs/infrastructure-as-code
+
+services:
+  - type: web
+    name: truthpod-backend
+    env: docker
+    plan: free
+    autoDeploy: true
+    region: oregon
+    healthCheckPath: /api/health
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: LOG_LEVEL
+        value: info
+      - key: ALLOW_ORIGINS
+        value: "*"
+      - key: HTTPS_ENFORCE
+        value: "1"
+      - key: TRUST_X_FORWARDED_PROTO
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: truthpod-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: truthpod-redis
+          property: connectionString
+      # Optional provider creds (set via dashboard or here if desired)
+      # - key: GOOGLE_CLOUD_PROJECT
+      #   value: your-gcp-project
+      # - key: GOOGLE_APPLICATION_CREDENTIALS
+      #   value: /etc/secrets/gcp.json
+      # - key: AWS_REGION
+      #   value: us-east-1
+      # - key: AWS_ACCESS_KEY_ID
+      #   sync: false
+      # - key: AWS_SECRET_ACCESS_KEY
+      #   sync: false
+
+  - type: redis
+    name: truthpod-redis
+    plan: free
+    ipAllowList: []
+
+# Managed Postgres database
+# Render will create DATABASE_URL for the web service above via fromDatabase mapping.
+databases:
+  - name: truthpod-db
+    plan: free
+    region: oregon

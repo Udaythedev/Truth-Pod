@@ -36,6 +36,17 @@ class DeviceClient:
         r.raise_for_status()
         return r.json()
 
+    def rotate_token(self, token: str) -> str:
+        """Rotate the device token and return the new token.
+
+        Old token becomes invalid immediately.
+        """
+        headers = {"Authorization": f"Bearer {token}"}
+        r = self.session.post(f"{self.base_url}/api/iot/device/token/rotate", headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("api_token")
+
     def enroll_face(self, token: str, user_id: str, image_b64: str, meta: Optional[Dict] = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {token}"}
         payload = {"user_id": user_id, "image_b64": image_b64, "meta": meta or {}}

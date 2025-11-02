@@ -1,10 +1,25 @@
 import os
 from typing import List, Dict, Optional
 import httpx
+import hashlib
 from app.verify import verify_text
+
+try:
+    import redis  # type: ignore
+except Exception:
+    redis = None
 
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2"
+
+# Redis for caching
+REDIS_URL = os.getenv("REDIS_URL", "")
+_redis_client = None
+if REDIS_URL and redis is not None:
+    try:
+        _redis_client = redis.from_url(REDIS_URL)
+    except Exception:
+        _redis_client = None
 
 
 # Local fallback mock news
@@ -53,7 +68,23 @@ def _format_newsapi_article(a: Dict) -> Dict:
 
 
 def get_trending(region: Optional[str] = "in", limit: int = 5) -> List[Dict]:
-    """Return trending news. If NEWSAPI_KEY is set, fetch top-headlines, otherwise return mock data."""
+    """Return trending news. If NEWSAPI_KEY is set, fetch top-headlines, otherwise return mock data.
+    
+    Caches results in Redis with key trending:{region}:latest for 5 minutes.
+    """
+    cache_key = f"trending:{region}:latest"
+    
+    # Try cache first
+    if _redis_client:
+        try:
+            cached = _redis_client.get(cache_key)
+            if cached:
+                import json
+                return json.loads(cached)[:limit]
+        except Exception:
+            pass
+    
+    # Fetch from NewsAPI or fallback
     if NEWSAPI_KEY:
         try:
             params = {
@@ -64,7 +95,17 @@ def get_trending(region: Optional[str] = "in", limit: int = 5) -> List[Dict]:
             r = httpx.get(f"{NEWSAPI_ENDPOINT}/top-headlines", params=params, timeout=5.0)
             r.raise_for_status()
             items = r.json().get("articles", [])
-            return [_format_newsapi_article(a) for a in items]
+            results = [_format_newsapi_article(a) for a in items]
+            
+            # Cache for 5 minutes
+            if _redis_client:
+                try:
+                    import json
+                    _redis_client.set(cache_key, json.dumps(results), ex=300)
+                except Exception:
+                    pass
+            
+            return results
         except Exception:
             # on any error fall back to mock
             return _MOCK_NEWS[:limit]
@@ -72,14 +113,41 @@ def get_trending(region: Optional[str] = "in", limit: int = 5) -> List[Dict]:
 
 
 def search_news(query: str, limit: int = 10) -> List[Dict]:
-    """Search news. If NEWSAPI_KEY is set, call NewsAPI 'everything' endpoint, otherwise search mock."""
+    """Search news. If NEWSAPI_KEY is set, call NewsAPI 'everything' endpoint, otherwise search mock.
+    
+    Caches results in Redis with key search:{hash(query)} for 30 minutes.
+    """
+    query_hash = hashlib.sha256(query.encode('utf-8')).hexdigest()[:16]
+    cache_key = f"search:{query_hash}"
+    
+    # Try cache first
+    if _redis_client:
+        try:
+            cached = _redis_client.get(cache_key)
+            if cached:
+                import json
+                return json.loads(cached)[:limit]
+        except Exception:
+            pass
+    
+    # Fetch from NewsAPI or fallback
     if NEWSAPI_KEY:
         try:
             params = {"apiKey": NEWSAPI_KEY, "q": query, "pageSize": limit}
             r = httpx.get(f"{NEWSAPI_ENDPOINT}/everything", params=params, timeout=5.0)
             r.raise_for_status()
             items = r.json().get("articles", [])
-            return [_format_newsapi_article(a) for a in items]
+            results = [_format_newsapi_article(a) for a in items]
+            
+            # Cache for 30 minutes
+            if _redis_client:
+                try:
+                    import json
+                    _redis_client.set(cache_key, json.dumps(results), ex=1800)
+                except Exception:
+                    pass
+            
+            return results
         except Exception:
             results = [n for n in _MOCK_NEWS if query.lower() in n["headline"].lower()][:limit]
             # apply verification
