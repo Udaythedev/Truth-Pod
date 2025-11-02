@@ -1,8 +1,33 @@
-TruthPod backend (MVP skeleton)
+# TruthPod Backend
 
-This folder contains a minimal FastAPI backend used as a starting point for the TruthPod project.
+**MVP backend for TruthPod IoT news verification device**
 
-Quick start (Windows PowerShell):
+This FastAPI backend provides:
+- Device registration & JWT authentication
+- NewsAPI integration with AI verification (Gemini)
+- Voice services: Speech-to-Text (STT) and Text-to-Speech (TTS)
+- Face recognition for user identification
+- User preferences and analytics
+- Redis caching for performance
+
+## 🎓 Student/Free Tier Setup
+
+**See [FREE_TIER_SETUP.md](../FREE_TIER_SETUP.md) for complete zero-cost configuration!**
+
+Quick summary of free services:
+- ✅ **STT**: Deepgram (200 min/month free)
+- ✅ **TTS**: gTTS (unlimited free, no API key!)
+- ✅ **Storage**: Local or Cloudflare R2 (10GB free)
+- ✅ **AI**: Gemini API (rate-limited free tier)
+- ✅ **News**: NewsAPI (100 req/day free)
+
+Total cost: **$0/month** for development and small-scale production!
+
+---
+
+## Quick Start
+
+### 1. Install Dependencies
 
 # Create a virtual environment and install dependencies
 python -m venv .venv; .\.venv\Scripts\pip install -r requirements.txt

@@ -12,6 +12,8 @@ alembic
 psycopg2-binary
 requests
 click
-google-cloud-speech
-google-cloud-texttospeech
+# Free cloud alternatives for STT/TTS/Storage
+gTTS>=2.4.0
+deepgram-sdk>=3.0.0
 boto3
+# Optional: google-cloud-speech, google-cloud-texttospeech (if you get funding later)

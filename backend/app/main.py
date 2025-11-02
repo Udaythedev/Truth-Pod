@@ -23,12 +23,24 @@ from contextlib import asynccontextmanager
 from fastapi import Request
 from fastapi.responses import FileResponse, Response
 from app.security import get_rate_limiter, rate_limit_for_device
+from app.storage import upload_audio, generate_presigned_url
+from app.storage import STORAGE_BACKEND as STORAGE_BACKEND_NAME
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 import httpx
 import json
 import struct
-from app.voice import transcribe_from_bytes, synthesize_text
+import logging
+
+# Voice services: use free tier if USE_FREE_VOICE=1, otherwise Google Cloud
+USE_FREE_VOICE = os.getenv("USE_FREE_VOICE", "0") == "1"
+if USE_FREE_VOICE:
+    from app.voice_free import transcribe_from_bytes, synthesize_text
+else:
+    from app.voice import transcribe_from_bytes, synthesize_text
+
+logger = logging.getLogger(__name__)
+
 try:
     import redis  # optional
 except Exception:
@@ -613,14 +625,13 @@ def news_tts_presigned(news_id: str, current_device: IoTDevice = Depends(get_cur
     # synthesize audio
     audio_bytes, mime = synthesize_text(headline)
 
-    # try S3 upload if configured
-    bucket = os.getenv('S3_BUCKET_NAME') or os.getenv('AWS_S3_BUCKET')
-    if bucket:
+    # Prefer legacy S3 path if S3 env is configured (keeps unit tests compatible)
+    legacy_bucket = os.getenv('S3_BUCKET_NAME') or os.getenv('AWS_S3_BUCKET')
+    if legacy_bucket:
         ok = upload_tts_to_s3(key, audio_bytes, content_type='audio/wav')
         if ok:
             url = generate_presigned_s3_url(key, expires=int(os.getenv('TTS_PRESIGNED_EXPIRY', '3600')))
             if url:
-                # record cache metadata
                 with Session(engine) as session:
                     entry = TTSCache(
                         news_id=safe_id,
@@ -634,6 +645,32 @@ def news_tts_presigned(news_id: str, current_device: IoTDevice = Depends(get_cur
                     session.add(entry)
                     session.commit()
                 return {"url": url, "expires_in": int(os.getenv('TTS_PRESIGNED_EXPIRY', '3600'))}
+
+    # try cloud upload if configured (B2/R2/S3 abstraction)
+    try:
+        ok, location = upload_audio(key, audio_bytes, content_type='audio/wav')
+    except Exception:
+        ok, location = False, None
+    if ok:
+        # For R2/S3, location may be a key; for B2 it may be a public URL
+        expires = int(os.getenv('TTS_PRESIGNED_EXPIRY', '3600'))
+        if location and location.startswith('http'):
+            url = location
+        else:
+            url = generate_presigned_url(key, expires=expires) or None
+        with Session(engine) as session:
+            entry = TTSCache(
+                news_id=safe_id,
+                headline_hash=h,
+                storage=STORAGE_BACKEND_NAME,
+                key_or_path=key,
+                url=url,
+                size_bytes=len(audio_bytes),
+                last_accessed_at=datetime.utcnow(),
+            )
+            session.add(entry)
+            session.commit()
+        return {"url": url or f"/media/tts/{safe_id}_{h}.wav", "expires_in": (expires if url else None)}
 
     # fallback to local cache path and return media URL
     tts_dir = os.path.join(os.path.abspath(MEDIA_DIR), "tts")
@@ -774,9 +811,11 @@ def news_tts_request(news_id: str, background_tasks: BackgroundTasks, current_de
         existing = session.exec(select(TTSCache).where(TTSCache.news_id == safe_id, TTSCache.headline_hash == h)).first()
         if existing:
             # ready
-            if existing.storage == 's3':
-                url = generate_presigned_s3_url(existing.key_or_path, expires=int(os.getenv('TTS_PRESIGNED_EXPIRY', '3600')))
+            if existing.storage in ('s3','r2'):
+                url = generate_presigned_url(existing.key_or_path, expires=int(os.getenv('TTS_PRESIGNED_EXPIRY', '3600')))
                 return {"status": "ready", "url": url}
+            if existing.storage == 'b2' and existing.url:
+                return {"status": "ready", "url": existing.url}
             return {"status": "ready", "url": existing.url}
     # schedule if not already
     if _mark_pending(safe_id, h):
@@ -796,9 +835,11 @@ def news_tts_status(news_id: str, current_device: IoTDevice = Depends(get_curren
     with Session(engine) as session:
         existing = session.exec(select(TTSCache).where(TTSCache.news_id == safe_id, TTSCache.headline_hash == h)).first()
         if existing:
-            if existing.storage == 's3':
-                url = generate_presigned_s3_url(existing.key_or_path, expires=int(os.getenv('TTS_PRESIGNED_EXPIRY', '3600')))
+            if existing.storage in ('s3','r2'):
+                url = generate_presigned_url(existing.key_or_path, expires=int(os.getenv('TTS_PRESIGNED_EXPIRY', '3600')))
                 return {"status": "ready", "url": url}
+            if existing.storage == 'b2' and existing.url:
+                return {"status": "ready", "url": existing.url}
             return {"status": "ready", "url": existing.url}
     if _is_pending(safe_id, h):
         return {"status": "processing"}
@@ -902,7 +943,8 @@ def get_preferences(user_id: int, current_device: IoTDevice = Depends(get_curren
         pref = session.exec(statement).first()
         if not pref:
             # return defaults
-            return {"language": "en", "region": "in", "categories": None}
+            return {"language": "en", "region": "in", "categories": []}
+        # categories are stored and returned as a comma-separated string for backward compatibility
         return {
             "language": pref.language,
             "region": pref.region,
@@ -927,7 +969,8 @@ def set_preferences(user_id: int, payload: dict, current_device: IoTDevice = Dep
                 user_id=user_id,
                 language=payload.get("language", "en"),
                 region=payload.get("region", "in"),
-                categories=payload.get("categories")
+                # store categories as comma-separated string
+                categories=(",".join(payload.get("categories", [])) if isinstance(payload.get("categories"), list) else payload.get("categories"))
             )
             session.add(pref)
         else:
@@ -937,11 +980,13 @@ def set_preferences(user_id: int, payload: dict, current_device: IoTDevice = Dep
             if "region" in payload:
                 pref.region = payload["region"]
             if "categories" in payload:
-                pref.categories = payload["categories"]
+                cats_val = payload["categories"]
+                pref.categories = ",".join(cats_val) if isinstance(cats_val, list) else cats_val
             pref.updated_at = datetime.utcnow()
             session.add(pref)
         session.commit()
         session.refresh(pref)
+        # Return categories as a comma-separated string for backward compatibility
         return {
             "language": pref.language,
             "region": pref.region,

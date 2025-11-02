@@ -7,3 +7,7 @@ __pycache__/
 
 # Env
 .env
+
+# Media cache and uploads (do not commit generated files)
+media/
+media/**
