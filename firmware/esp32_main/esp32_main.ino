@@ -111,7 +111,7 @@ const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
 // Backend API Configuration
-const char* API_BASE_URL = "https://your-backend.onrender.com";  // Change to your deployed backend URL
+const char* API_BASE_URL = "https://truth-pod.onrender.com";  // Change to your deployed backend URL
 // const char* API_BASE_URL = "http://192.168.1.100:8000";  // Or use local IP for testing
 
 // Device Configuration
