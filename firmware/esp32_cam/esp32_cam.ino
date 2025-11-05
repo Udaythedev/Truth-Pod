@@ -25,9 +25,14 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <base64.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 // ===== Configuration =====
+// Set to 0 while using Serial Monitor over GPIO 1/3 to avoid pin conflicts
+#define ENABLE_MAINBOARD_UART 0
 // WiFi Credentials (same as main board)
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
@@ -39,6 +44,7 @@ const char* API_BASE_URL = "https://your-backend.onrender.com";
 // Device Configuration
 String deviceMAC = "";
 String deviceToken = "";  // Will be shared from main board via UART or get own token
+Preferences preferencesCam;
 
 // ===== Pin Definitions (ESP32-CAM AI-Thinker) =====
 #define PWDN_GPIO_NUM     32
@@ -79,6 +85,9 @@ void setupCamera();
 void setupButton();
 void setupLED();
 void setupUART();
+void registerDevice();
+bool loadDeviceToken();
+void saveDeviceToken(String token);
 void captureAndRecognize();
 void captureAndEnroll();
 camera_fb_t* captureImage();
@@ -88,34 +97,72 @@ void blinkLED(int times, int delayMs);
 
 // ===== Setup =====
 void setup() {
+  // Disable brownout detector to prevent resets on power fluctuations
+  // Note: Only do this if you have stable 5V power
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  
   Serial.begin(115200);
-  delay(1000);
+  Serial.setDebugOutput(true);
+  delay(2000);  // Give time for serial to stabilize
   
+  Serial.println();
   Serial.println("=== TruthPod ESP32-CAM Starting ===");
+  Serial.println("Setup: Phase 1 - Hardware Init");
   
-  // Get device MAC address
+  // Setup hardware
+  setupButton();
+  Serial.println("Setup: Button OK");
+  
+  setupLED();
+  Serial.println("Setup: LED OK");
+  
+  #if ENABLE_MAINBOARD_UART
+  setupUART();
+  Serial.println("Setup: UART OK");
+  #endif
+  
+  // Prepare WiFi and preferences
+  WiFi.mode(WIFI_STA);
+  preferencesCam.begin("truthpod_cam", false);
+
+  // Get device MAC address (after WiFi mode set)
   deviceMAC = WiFi.macAddress();
   Serial.print("Camera MAC: ");
   Serial.println(deviceMAC);
   
-  // Setup hardware
-  setupButton();
-  setupLED();
-  setupUART();
+  Serial.println("Setup: Phase 2 - Camera Init");
   setupCamera();
+  Serial.println("Setup: Camera OK");
   
   // Connect to WiFi
+  Serial.println("Setup: Phase 3 - WiFi Connect");
   blinkLED(3, 200);  // Indicate starting
   setupWiFi();
+
+  // Obtain device token (either from storage or via registration)
+  Serial.println("Setup: Phase 4 - Device Registration");
+  if (!loadDeviceToken()) {
+    Serial.println("Token: Not found in storage, registering device...");
+    registerDevice();
+  } else {
+    Serial.println("Token: Loaded from storage");
+  }
+  
+  // Verify we have a valid token
+  if (deviceToken.length() > 0) {
+    Serial.print("Token: Active (length=");
+    Serial.print(deviceToken.length());
+    Serial.println(")");
+  } else {
+    Serial.println("Token: WARNING - No token available! API calls will fail with 401/403.");
+    Serial.println("Token: Check network connection or backend availability.");
+  }
   
   if (WiFi.status() == WL_CONNECTED) {
     blinkLED(2, 500);  // Indicate WiFi connected
   } else {
     blinkLED(5, 100);  // Indicate WiFi failed
   }
-  
-  // Note: Device token should be obtained from main board or register separately
-  // For simplicity, we'll use the main board's token via UART or register independently
   
   Serial.println("ESP32-CAM ready!");
   Serial.println("Press button to capture and recognize face");
@@ -214,6 +261,8 @@ void setupWiFi() {
 
 // ===== Camera Setup =====
 void setupCamera() {
+  Serial.println("Camera: Configuring...");
+  
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -235,27 +284,36 @@ void setupCamera() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST;  // Add this to prevent buffer issues
   
+  Serial.println("Camera: Checking PSRAM...");
   // Init with high specs for face detection
   if (psramFound()) {
+    Serial.println("Camera: PSRAM found, using high quality");
     config.frame_size = FRAMESIZE_QVGA;  // 320x240
     config.jpeg_quality = 10;
     config.fb_count = 2;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
+    Serial.println("Camera: WARNING - No PSRAM! Using minimal config");
     config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 12;
     config.fb_count = 1;
+    config.fb_location = CAMERA_FB_IN_DRAM;
   }
   
+  Serial.println("Camera: Initializing...");
   // Initialize camera
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x\n", err);
+    Serial.printf("Camera init FAILED with error 0x%x\n", err);
     cameraInitialized = false;
+    // Don't return - let setup continue
+    Serial.println("Camera: Continuing without camera...");
     return;
   }
   
-  Serial.println("Camera initialized successfully!");
+  Serial.println("Camera: Init SUCCESS!");
   cameraInitialized = true;
   
   // Adjust camera settings
@@ -506,6 +564,9 @@ bool makeAPICall(String endpoint, String method, String payload, String& respons
   // Add authorization header if we have a token
   if (deviceToken.length() > 0) {
     http.addHeader("Authorization", "Bearer " + deviceToken);
+    Serial.println("API: Added Authorization header");
+  } else {
+    Serial.println("API: WARNING - No token available, request may be rejected");
   }
   
   // Set timeout for large image uploads
@@ -527,6 +588,21 @@ bool makeAPICall(String endpoint, String method, String payload, String& respons
   
   if (httpResponseCode > 0) {
     response = http.getString();
+    
+    // Log error responses for debugging
+    if (httpResponseCode == 401 || httpResponseCode == 403) {
+      Serial.println("API: Authentication/Authorization failed");
+      Serial.print("API: Response body: ");
+      Serial.println(response);
+      
+      // Try re-registering if token was rejected
+      if (endpoint != "/api/iot/device/register") {
+        Serial.println("API: Token may be invalid, clearing and will re-register on next boot");
+        preferencesCam.remove("token");
+        deviceToken = "";
+      }
+    }
+    
     http.end();
     return (httpResponseCode == 200);
   } else {
@@ -535,4 +611,43 @@ bool makeAPICall(String endpoint, String method, String payload, String& respons
     http.end();
     return false;
   }
+}
+
+// ===== Device Registration & Token Storage =====
+void registerDevice() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Token: WiFi not connected; cannot register");
+    return;
+  }
+
+  String payload = String("{\"device_mac\":\"") + deviceMAC + "\"}";
+  String response = "";
+
+  if (makeAPICall("/api/iot/device/register", "POST", payload, response)) {
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, response);
+    if (!error) {
+      String token = doc["api_token"].as<String>();
+      if (token.length() > 0) {
+        deviceToken = token;
+        saveDeviceToken(token);
+        Serial.println("Token: Registration successful and saved");
+      } else {
+        Serial.println("Token: Registration response missing token");
+      }
+    } else {
+      Serial.println("Token: Failed to parse registration response");
+    }
+  } else {
+    Serial.println("Token: Device registration failed");
+  }
+}
+
+bool loadDeviceToken() {
+  deviceToken = preferencesCam.getString("token", "");
+  return deviceToken.length() > 0;
+}
+
+void saveDeviceToken(String token) {
+  preferencesCam.putString("token", token);
 }

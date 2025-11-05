@@ -30,6 +30,81 @@
 #include <driver/i2s.h>
 #include <base64.h>
 
+// Simple base64 encode/decode helpers (self-contained)
+// These provide the functions used elsewhere in this sketch:
+//   String base64_encode(const uint8_t* data, size_t len)
+//   int base64_dec_len(const char* input, int inputLen)
+//   int base64_decode(char* output, const char* input, int inputLen)
+// Implemented here to avoid dependency issues with different base64 libraries.
+
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+String base64_encode(const uint8_t* data, size_t len) {
+  String out;
+  out.reserve(((len + 2) / 3) * 4);
+  unsigned int i = 0;
+  while (i < len) {
+    uint32_t octet_a = i < len ? data[i++] : 0;
+    uint32_t octet_b = i < len ? data[i++] : 0;
+    uint32_t octet_c = i < len ? data[i++] : 0;
+
+    uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+
+    out += b64_table[(triple >> 18) & 0x3F];
+    out += b64_table[(triple >> 12) & 0x3F];
+    out += (i - 2 <= len) ? b64_table[(triple >> 6) & 0x3F] : '=';
+    out += (i - 1 <= len) ? b64_table[triple & 0x3F] : '=';
+  }
+  return out;
+}
+
+int base64_dec_len(const char* input, int inputLen) {
+  if (!input || inputLen <= 0) return 0;
+  int padding = 0;
+  if (inputLen >= 1 && input[inputLen - 1] == '=') padding++;
+  if (inputLen >= 2 && input[inputLen - 2] == '=') padding++;
+  return (inputLen / 4) * 3 - padding;
+}
+
+static inline int _b64_val(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+int base64_decode(char* output, const char* input, int inputLen) {
+  if (!input || !output || inputLen <= 0) return 0;
+  int outIndex = 0;
+  int i = 0;
+  while (i < inputLen) {
+    // read 4 valid base64 chars
+    int vals[4] = {-1, -1, -1, -1};
+    int found = 0;
+    for (int j = 0; j < 4 && i < inputLen; i++) {
+      char c = input[i];
+      if (c == '\r' || c == '\n' || c == ' ') continue; // skip whitespace
+      vals[j++] = _b64_val(c);
+      found++;
+    }
+    if (found == 0) break;
+
+    int v0 = vals[0] < 0 ? 0 : vals[0];
+    int v1 = vals[1] < 0 ? 0 : vals[1];
+    int v2 = vals[2] < 0 ? 0 : vals[2];
+    int v3 = vals[3] < 0 ? 0 : vals[3];
+
+    uint32_t triple = (v0 << 18) | (v1 << 12) | (v2 << 6) | v3;
+
+    output[outIndex++] = (triple >> 16) & 0xFF;
+    if (vals[2] != -1) output[outIndex++] = (triple >> 8) & 0xFF;
+    if (vals[3] != -1) output[outIndex++] = triple & 0xFF;
+  }
+  return outIndex;
+}
+
 // ===== Configuration =====
 // WiFi Credentials (hardcoded for now - use WiFiManager in production)
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
@@ -517,7 +592,7 @@ void recordAndTranscribe() {
   Serial.println(" bytes");
   
   // Encode audio to base64
-  String base64Audio = base64::encode(audioBuffer, totalBytesRead);
+  String base64Audio = base64_encode(audioBuffer, totalBytesRead);
   free(audioBuffer);
   
   // Send to backend for transcription
@@ -631,11 +706,11 @@ void playNewsAudio(String newsId) {
       Serial.println(" chars");
       
       // Decode base64 audio
-      int decodedLen = base64::decodeLength(base64Audio.c_str());
+      int decodedLen = base64_dec_len(base64Audio.c_str(), base64Audio.length());
       uint8_t* audioData = (uint8_t*)malloc(decodedLen);
       
       if (audioData) {
-        base64::decode(audioData, base64Audio.c_str(), base64Audio.length());
+        base64_decode((char*)audioData, base64Audio.c_str(), base64Audio.length());
         
         // Play audio through I2S speaker
         size_t bytesWritten = 0;
