@@ -26,7 +26,18 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
-#include <TFT_eSPI.h>
+#include "../lgfx_setup.h"
+#include <LovyanGFX.hpp>
+
+// Define color constants used by the code (compatibility with TFT_eSPI names)
+#define TFT_BLACK 0x0000
+#define TFT_WHITE 0xFFFF
+#define TFT_BLUE  0x001F
+#define TFT_GREEN 0x07E0
+#define TFT_RED   0xF800
+#define TFT_YELLOW 0xFFE0
+#define TFT_CYAN  0x07FF
+#define TFT_DARKGREEN 0x03E0
 #include <driver/i2s.h>
 #include <base64.h>
 
@@ -135,16 +146,19 @@ String deviceToken = "";
 #define BUTTON_BACK 32
 
 // RGB LED (or use 3 separate pins)
-#define LED_RED 16
-#define LED_GREEN 17
-#define LED_BLUE 18
+// Note: default parallel TFT pins may conflict with some GPIOs. Use pins that do not
+// overlap with display/data lines. Adjust as needed to match your wiring.
+#define LED_RED 2
+#define LED_GREEN 15
+#define LED_BLUE 4
 
 // UART for ESP32-CAM communication
 #define UART_RX 19
 #define UART_TX 23
 
 // ===== Display Configuration =====
-TFT_eSPI tft = TFT_eSPI();
+// Define the LovyanGFX instance
+LGFX tft;
 
 // ===== Global State =====
 Preferences preferences;
