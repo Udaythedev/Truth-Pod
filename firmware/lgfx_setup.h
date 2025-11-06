@@ -1,7 +1,9 @@
 // LovyanGFX setup wrapper for parallel ILI9341
 #pragma once
 #include <LovyanGFX.hpp>
-#include "lgfx_user_settings.h"
+// lgfx_user_settings.h is stored in a subdirectory (lgfx_user_settings.h/lgfx_user_settings.h)
+// so include it via the relative subpath so the Arduino/PlatformIO compiler can find it.
+#include "lgfx_user_settings.h/lgfx_user_settings.h"
 
 class LGFX : public lgfx::LGFX_Device {
 public:
