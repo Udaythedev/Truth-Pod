@@ -157,8 +157,7 @@ String deviceToken = "";
 #define UART_TX 23
 
 // ===== Display Configuration =====
-// Define the LovyanGFX instance
-LGFX tft;
+// The LovyanGFX instance `tft` is defined in firmware/lgfx_setup.h
 
 // ===== Global State =====
 Preferences preferences;

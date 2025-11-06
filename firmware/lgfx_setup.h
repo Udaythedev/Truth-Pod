@@ -14,11 +14,9 @@ public:
     // Configure parallel bus pins from lgfx_user_settings.h
     {
       auto cfg = _bus_instance.config();
-      cfg.pin_wr = TFT_WR;
-      cfg.pin_rs = TFT_RS;
-      cfg.pin_rd = TFT_RD;
-      cfg.pin_cs = TFT_CS;
-      cfg.pin_rst = TFT_RST;
+  cfg.pin_wr = TFT_WR;
+  cfg.pin_rs = TFT_RS;
+  cfg.pin_rd = TFT_RD;
       cfg.pin_d0 = TFT_D0;
       cfg.pin_d1 = TFT_D1;
       cfg.pin_d2 = TFT_D2;
