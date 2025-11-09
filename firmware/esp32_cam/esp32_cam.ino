@@ -31,8 +31,9 @@
 #include "soc/rtc_cntl_reg.h"
 
 // ===== Configuration =====
-// Set to 0 while using Serial Monitor over GPIO 1/3 to avoid pin conflicts
-#define ENABLE_MAINBOARD_UART 0
+// Enable UART between the CAM and main board via Serial2 (GPIO1/3 <-> main GPIO16/17)
+// Set to 1 to initialize Serial2 for mainboard communication
+#define ENABLE_MAINBOARD_UART 1
 // WiFi Credentials (same as main board)
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
@@ -146,6 +147,10 @@ void setup() {
     registerDevice();
   } else {
     Serial.println("Token: Loaded from storage");
+    #if ENABLE_MAINBOARD_UART
+    // Share token with main board so it can reuse the same API token
+    sendToMainBoard("TOKEN:" + deviceToken);
+    #endif
   }
   
   // Verify we have a valid token
@@ -631,6 +636,9 @@ void registerDevice() {
       if (token.length() > 0) {
         deviceToken = token;
         saveDeviceToken(token);
+        #if ENABLE_MAINBOARD_UART
+        sendToMainBoard("TOKEN:" + token);
+        #endif
         Serial.println("Token: Registration successful and saved");
       } else {
         Serial.println("Token: Registration response missing token");

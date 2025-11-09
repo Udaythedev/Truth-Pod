@@ -74,5 +74,34 @@ A GitHub Actions workflow runs gitleaks on pushes and pull requests to `main` an
 - The base URL is set to the deployed backend: `https://truth-pod.onrender.com`.
 - ESP32-CAM firmware supports enroll/recognize endpoints and stores the device token in Preferences after registration.
 
+### Hardware wiring (TFT)
+
+If you're using the ILI9341 or a similar parallel TFT in 8-bit mode, note the following
+about the RD (read) pin:
+
+- Tie the display's RD pin to 3.3V (logical HIGH) to put the display in permanent
+	"write-only" mode. This prevents the display from enabling its output drivers
+	on the shared data bus and avoids bus contention or noise.
+- In the repo's LovyanGFX user settings (`firmware/lgfx_user_settings.h`) we set
+	`TFT_RD` to `-1` which indicates that the pin is not controlled by the MCU and
+	should be physically tied to the 3.3V rail on the module or PCB.
+- Do NOT feed an unregulated LiPo battery directly into the 3.3V rail. If you're
+	powering the ESP32 from a boost/DC-DC converter or a TP4056/LM2596 style module,
+	ensure the display's VCC and the MCU's 3.3V come from the same regulated 3.3V
+	source (or tie RD to whichever 3.3V rail the display uses). Mixing unregulated
+	battery voltage with the display rail can damage the module.
+
+Verification:
+
+1. With the device powered, measure continuity between the module's RD pin and
+	 its 3.3V pin (or measure voltage at RD) — it should read ~3.3V.
+2. If the display was previously connected to a GPIO for RD, remove that wire
+	 and tie RD to 3.3V instead. Keep the MCU data bus free so only the MCU drives
+	 the pins.
+
+If you'd rather avoid parallel bus wiring, consider switching LovyanGFX to SPI
+mode (edit the `lgfx_user_settings.h` and disable `LGFX_USE_PARALLEL`) — SPI
+uses far fewer pins and is less prone to these kinds of bus contention issues.
+
 ## Release process
 - Create a tag like `v0.1.0` to trigger the release workflow. It will build and push the Docker image to GHCR and create a GitHub Release.

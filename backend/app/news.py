@@ -12,6 +12,10 @@ except Exception:
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2"
 
+# Default news source: 'reddit' preferred for higher public rate limits
+# Options: 'reddit' | 'newsapi' | 'mock'
+NEWS_SOURCE = os.getenv("NEWS_SOURCE", "reddit").lower()
+
 # Redis for caching
 REDIS_URL = os.getenv("REDIS_URL", "")
 _redis_client = None
@@ -55,6 +59,83 @@ _MOCK_NEWS: List[Dict] = [
 ]
 
 
+def _in_pytest() -> bool:
+    # Avoid real network during unit tests
+    return bool(os.getenv("PYTEST_CURRENT_TEST"))
+
+
+def _format_reddit_post(p: Dict, source_sub: str) -> Dict:
+    data = p.get("data", {})
+    title = data.get("title") or ""
+    url = data.get("url") or ("https://www.reddit.com" + (data.get("permalink") or ""))
+    # Use Reddit post id as news_id
+    nid = data.get("id") or (url[:32])
+    conf = verify_text(title)
+    return {
+        "news_id": str(nid),
+        "headline": title,
+        "source": f"Reddit: {source_sub}",
+        "confidence": conf,
+        "url": url,
+    }
+
+
+def _reddit_headers() -> Dict[str, str]:
+    # Reddit requires a descriptive User-Agent
+    ua = os.getenv("REDDIT_USER_AGENT", "TruthPod/1.0 (news fetch; contact: support@example.com)")
+    return {"User-Agent": ua}
+
+
+def _reddit_trending(limit: int = 5, timeout: float = 5.0) -> List[Dict]:
+    """Fetch top posts from r/news and r/worldnews (last day), combine and trim to limit."""
+    subs = ["news", "worldnews"]
+    items: List[Dict] = []
+    with httpx.Client(timeout=timeout, headers=_reddit_headers()) as client:
+        for sub in subs:
+            try:
+                r = client.get(f"https://www.reddit.com/r/{sub}/top.json", params={"limit": limit, "t": "day"})
+                r.raise_for_status()
+                children = (r.json().get("data", {}) or {}).get("children", [])
+                for c in children:
+                    items.append(_format_reddit_post(c, f"r/{sub}"))
+            except Exception:
+                continue
+    # de-duplicate by news_id while preserving order
+    seen = set()
+    dedup: List[Dict] = []
+    for it in items:
+        nid = it.get("news_id")
+        if nid in seen:
+            continue
+        seen.add(nid)
+        dedup.append(it)
+        if len(dedup) >= limit:
+            break
+    return dedup
+
+
+def _reddit_search(query: str, limit: int = 10, timeout: float = 5.0) -> List[Dict]:
+    """Search Reddit posts by query across r/news and r/worldnews."""
+    q = f"(subreddit:news OR subreddit:worldnews) {query}"
+    try:
+        r = httpx.get(
+            "https://www.reddit.com/search.json",
+            params={"q": q, "limit": limit, "sort": "top", "t": "week"},
+            headers=_reddit_headers(),
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        children = (r.json().get("data", {}) or {}).get("children", [])
+        out = []
+        for c in children:
+            # choose subreddit label from post data if available
+            sub = "r/" + ((c.get("data") or {}).get("subreddit") or "news")
+            out.append(_format_reddit_post(c, sub))
+        return out[:limit]
+    except Exception:
+        return []
+
+
 def _format_newsapi_article(a: Dict) -> Dict:
     headline = a.get("title") or ""
     conf = verify_text(headline)
@@ -68,8 +149,13 @@ def _format_newsapi_article(a: Dict) -> Dict:
 
 
 def get_trending(region: Optional[str] = "in", limit: int = 5) -> List[Dict]:
-    """Return trending news. If NEWSAPI_KEY is set, fetch top-headlines, otherwise return mock data.
-    
+    """Return trending news.
+
+    Priority:
+    1) Reddit (default)
+    2) NewsAPI (if key present)
+    3) Local mock
+
     Caches results in Redis with key trending:{region}:latest for 5 minutes.
     """
     cache_key = f"trending:{region}:latest"
@@ -84,8 +170,27 @@ def get_trending(region: Optional[str] = "in", limit: int = 5) -> List[Dict]:
         except Exception:
             pass
     
-    # Fetch from NewsAPI or fallback
-    if NEWSAPI_KEY:
+    # Avoid network during tests
+    if _in_pytest():
+        return _MOCK_NEWS[:limit]
+
+    # Preferred: Reddit
+    if NEWS_SOURCE == "reddit":
+        try:
+            results = _reddit_trending(limit=limit)
+            if results:
+                if _redis_client:
+                    try:
+                        import json
+                        _redis_client.set(cache_key, json.dumps(results), ex=300)
+                    except Exception:
+                        pass
+                return results
+        except Exception:
+            pass
+
+    # Next: NewsAPI
+    if NEWSAPI_KEY and NEWS_SOURCE in ("newsapi", "reddit", "mock"):
         try:
             params = {
                 "apiKey": NEWSAPI_KEY,
@@ -113,8 +218,13 @@ def get_trending(region: Optional[str] = "in", limit: int = 5) -> List[Dict]:
 
 
 def search_news(query: str, limit: int = 10) -> List[Dict]:
-    """Search news. If NEWSAPI_KEY is set, call NewsAPI 'everything' endpoint, otherwise search mock.
-    
+    """Search news.
+
+    Priority:
+    1) Reddit search (default)
+    2) NewsAPI 'everything' (if key present)
+    3) Local mock substring search
+
     Caches results in Redis with key search:{hash(query)} for 30 minutes.
     """
     query_hash = hashlib.sha256(query.encode('utf-8')).hexdigest()[:16]
@@ -130,8 +240,30 @@ def search_news(query: str, limit: int = 10) -> List[Dict]:
         except Exception:
             pass
     
-    # Fetch from NewsAPI or fallback
-    if NEWSAPI_KEY:
+    # Avoid network during tests
+    if _in_pytest():
+        results = [n for n in _MOCK_NEWS if query.lower() in n["headline"].lower()][:limit]
+        for r in results:
+            r["confidence"] = verify_text(r.get("headline", ""))
+        return results
+
+    # Preferred: Reddit
+    if NEWS_SOURCE == "reddit":
+        try:
+            results = _reddit_search(query, limit=limit)
+            if results:
+                if _redis_client:
+                    try:
+                        import json
+                        _redis_client.set(cache_key, json.dumps(results), ex=1800)
+                    except Exception:
+                        pass
+                return results
+        except Exception:
+            pass
+
+    # Next: NewsAPI
+    if NEWSAPI_KEY and NEWS_SOURCE in ("newsapi", "reddit", "mock"):
         try:
             params = {"apiKey": NEWSAPI_KEY, "q": query, "pageSize": limit}
             r = httpx.get(f"{NEWSAPI_ENDPOINT}/everything", params=params, timeout=5.0)

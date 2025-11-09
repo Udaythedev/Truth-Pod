@@ -58,59 +58,89 @@ This guide explains how to flash and configure the ESP32 firmware for the TruthP
 
 ### ESP32 Main Board Wiring
 
-#### TFT Display (ILI9341 - SPI)
+### TFT Display (ILI9341 - SPI)
 | Display Pin | ESP32 Pin | Description |
 |-------------|-----------|-------------|
-| VCC | 3.3V | Power |
+| VCC | 3.3V (or module VCC) | Power (verify shield VCC requirement) |
 | GND | GND | Ground |
-| CS | GPIO 15 | Chip Select |
-| RESET | GPIO 4 | Reset |
-| DC/RS | GPIO 2 | Data/Command |
-| MOSI | GPIO 23 | SPI Data Out |
-| SCK | GPIO 18 | SPI Clock |
-| LED | 3.3V | Backlight (via 100Ω resistor) |
-| MISO | GPIO 19 | SPI Data In (optional) |
+| SCLK / SD_SCK | GPIO 18 | SPI Clock |
+| MOSI / SD_DI | GPIO 23 | SPI MOSI (Data Out to display) |
+| MISO / SD_DO | GPIO 19 | SPI MISO (optional; required if reading/SD card) |
+| CS / SD_SS | GPIO 5 | Chip Select for the display (or SD card) |
+| DC / RS | GPIO 21 | Data/Command select (D/C or RS) |
+| RESET | GPIO 22 | Reset |
+| RD | Tie to 3.3V (permanent HIGH = write-only) | Prevents display from driving the bus |
+| LED/BL | Tied to rail (no exposed MCU pin) | Backlight — many shields tie BL to the module rail. To control brightness, wire BL to a transistor and set `TFT_BL` in `lgfx_user_settings.h` to that GPIO. |
 
 #### I2S Microphone (INMP441)
 | Mic Pin | ESP32 Pin | Description |
 |---------|-----------|-------------|
 | VDD | 3.3V | Power |
 | GND | GND | Ground |
-| SD | GPIO 33 | Serial Data |
-| WS | GPIO 25 | Word Select (L/R Clock) |
-| SCK | GPIO 26 | Serial Clock |
+| SD (digital I2S) | GPIO 33 | Serial Data (I2S data in) - used for INMP441 digital mic |
+| WS (digital I2S) | GPIO 25 | Word Select (L/R Clock) - used for INMP441 |
+| SCK (digital I2S) | GPIO 26 | Serial Clock (BCLK) - used for INMP441 |
+
+Analog electret mic (MAX4466) wiring (recommended for this build):
+| MAX4466 Pin | ESP32 Pin | Notes |
+|-------------|-----------|-------|
+| VCC | 3.3V | Power the amplifier with 3.3V (check module docs) |
+| GND | GND | Common ground |
+| OUT | GPIO 34 (ADC1_CH6) | Connect amplifier output to ADC pin (input-only). Use external bias/pull if required. |
+
+Notes:
+- The firmware supports either a digital I2S microphone (INMP441) or an analog MAX4466. The default build uses the analog mic on GPIO34. If you use the INMP441, wire SD/WS/SCK as shown above.
+- GPIO34 and GPIO35 are input-only ADC pins and do not support internal pull-ups. Use an external pull-up or bias network as needed.
 
 #### I2S Speaker/Amplifier (MAX98357A)
 | Speaker Pin | ESP32 Pin | Description |
 |-------------|-----------|-------------|
-| VIN | 5V | Power |
+| VIN | 5V | Power (amp supply) |
 | GND | GND | Ground |
-| DIN | GPIO 12 | Serial Data |
-| BCLK | GPIO 14 | Bit Clock |
-| LRC | GPIO 27 | Left/Right Clock |
+| DIN (I2S amp) | GPIO 12 | Serial Data (I2S data out) - used for MAX98357A |
+| BCLK (I2S amp) | GPIO 14 | Bit Clock |
+| LRC (I2S amp) | GPIO 27 | Left/Right Clock (WS) |
+
+LM386 analog amplifier wiring (recommended alternative):
+| LM386 Pin | ESP32 Pin | Notes |
+|-----------|-----------|-------|
+| VCC | 5V | Power amplifier (provide stable 5V) |
+| GND | GND | Common ground with ESP32 |
+| IN | GPIO 25 (DAC1) | Connect ESP32 DAC output to LM386 input via a 10uF coupling capacitor and a series resistor (~100Ω) |
+
+Notes:
+- The firmware can output audio via I2S to an I2S amplifier (MAX98357A) or use the ESP32 built-in DAC to drive an LM386. The default build uses LM386 on GPIO25 (DAC1). Use a coupling capacitor and ensure LM386 gain is set appropriately.
 
 #### Buttons
 | Button | ESP32 Pin | Description |
 |--------|-----------|-------------|
-| Voice | GPIO 34 | Voice capture/play button |
-| Next | GPIO 35 | Next article button |
+| Voice | GPIO 33 | Voice capture/play button |
+| Next | GPIO 33 | Next article button |
 | Back | GPIO 32 | Previous article button |
+
+**Note**: Some revisions change the default voice/next pin assignments. Current firmware uses:
+| Voice | GPIO 13 | Voice capture/play button |
+| Next  | GPIO 33 | Next article button |
+| Back  | GPIO 32 | Previous article button |
 
 **Note**: Connect buttons between GPIO pin and GND (with internal pull-up resistors).
 
 #### RGB LED
 | LED Pin | ESP32 Pin | Description |
 |---------|-----------|-------------|
-| Red | GPIO 16 | Red LED cathode (via 220Ω resistor) |
-| Green | GPIO 17 | Green LED cathode (via 220Ω resistor) |
-| Blue | GPIO 18 | Blue LED cathode (via 220Ω resistor) |
-| Common | 3.3V | Common anode |
+| Red | GPIO 2 | Red LED (or cathode) |
+| Green | GPIO 21 | Green LED |
+| Blue | GPIO 4 | Blue LED |
+| Common | 3.3V (or GND depending on common anode/cathode) | Wiring depends on LED type; use 220Ω resistors on each LED leg |
 
+Notes:
+- The firmware supports both common-cathode (normal) and common-anode (inverted) LED wiring. At runtime you can set the wiring mode via the device web server: `http://<device_ip>/led_set?invert=1` to enable inverted (common-anode) mode, or `?invert=0` for normal. The choice is persisted in device preferences.
+- If your RGB LED does not light in the expected polarity during boot diagnostics, try flipping the polarity using the endpoint above.
 #### UART to ESP32-CAM
 | Main Board | ESP32-CAM | Description |
 |------------|-----------|-------------|
-| GPIO 19 (RX) | GPIO 1 (TX) | Receive from camera |
-| GPIO 23 (TX) | GPIO 3 (RX) | Send to camera |
+| GPIO 16 (RX) | GPIO 1 (TX) | Receive from camera (Main RX <- CAM TX) |
+| GPIO 17 (TX) | GPIO 3 (RX) | Send to camera (Main TX -> CAM RX) |
 | GND | GND | Common ground |
 
 ### ESP32-CAM Wiring

@@ -85,12 +85,12 @@ See **[QUICK_START.md](QUICK_START.md)** for step-by-step instructions.
 
 ### ESP32 Main Board
 
-**Display (SPI):** CS=15, DC=2, RST=4, MOSI=23, CLK=18, MISO=19  
+**Display (SPI):** CS=5, DC=21, RST=22, MOSI=23, SCLK=18, MISO=19  
 **Microphone (I2S):** SD=33, WS=25, SCK=26  
 **Speaker (I2S):** DIN=12, BCLK=14, LRC=27  
-**Buttons:** Voice=34, Next=35, Back=32  
-**LEDs:** Red=16, Green=17, Blue=18  
-**UART:** TX=23, RX=19  
+**Buttons:** Voice=13, Next=33, Back=32  
+**LEDs:** Red=2, Green=21, Blue=4  
+**UART:** RX=16, TX=17  
 
 ### ESP32-CAM
 
